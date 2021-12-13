@@ -30,22 +30,14 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
-
-// hadiii -> ...
-typedef struct SimpleRange
-{
-    int         start;
-    int         end;
-    int         length;
-} SimpleRange;
+#include "utils/selfuncs.h"
+#include "utils/proj_custom_header.h"
 
 
 static int	float8_qsort_cmp(const void *a1, const void *a2);
 static int	range_bound_qsort_cmp(const void *a1, const void *a2, void *arg);
 static void compute_range_stats(VacAttrStats *stats,
 								AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
-
-void accumulate_range_in_slot_percentage(float8 s_min, float8 s_max, SimpleRange *range, float8 *value_to_add_to);
 
 /*
  * range_typanalyze -- typanalyze function for range columns
@@ -103,27 +95,24 @@ range_bound_qsort_cmp(const void *a1, const void *a2, void *arg)
 
 
 // hadiii -> ...
-void accumulate_range_in_slot_percentage(float8 s_min, float8 s_max, SimpleRange *range, float8 *acc) {
-    int r_min =     range->start;
-    int r_max =     range->end;
-    int r_length =  range->length;
-
-    float8 cv = 0;
+float8 accumulate_range_in_slot_percentage(float8 s_min, float8 s_max, SimpleRange range) {
+    int r_min =     range.start;
+    int r_max =     range.end;
+    int r_length =  range.length;
 
     if(s_max < r_min || s_min > r_max)
-        cv = 0;
+        return 0;
     else if(s_min <= r_min && s_max >= r_max)
-        cv = 1;
+        return 1;
     else if(s_min > r_min && s_max < r_max)
-        cv = (float8)(s_max - s_min) / r_length;
+        return (float8)(s_max - s_min) / r_length;
     else if(s_min <= r_min)
-        cv = (float8)(s_max - r_min) / r_length;
+        return (float8)(s_max - r_min) / r_length;
     else if(s_max >= r_max)
-        cv = (float8)(r_max - s_min) / r_length;
+        return (float8)(r_max - s_min) / r_length;
 
-    *acc += cv;
+    return 0;
 }
-
 
 /*
  * compute_range_stats() -- compute statistics for a range column
@@ -196,15 +185,6 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		range = DatumGetRangeTypeP(value);
 		range_deserialize(typcache, range, &lower, &upper, &empty);
 
-        /*
-            - read the hist from a selectivity function
-            - make the estimator in the same order done in python
-            - alter the operator to use the new estimations
-            - make some tests
-            - ask Hind and Luka to prepare a report
-            - finalize the report
-        */
-
 		if (!empty)
 		{
 			/* Remember bounds and length for further usage in histograms */
@@ -223,7 +203,6 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
             simple_ranges[range_no].length = d_upper - d_lower;
             
             slot_length = (sample_upper - sample_lower) / SLOTS_COUNT;
-
 
 			if (lower.infinite || upper.infinite)
 			{
@@ -421,9 +400,6 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		stats->stadistinct = 0.0;	/* "unknown" */
 	}
 
-    printf("slot_length: %d\n", slot_length);
-    printf("sample_lower: %d\n", sample_lower);
-
     // hadii
     for(int i = 0; i <= SLOTS_COUNT; i++) {
         hist_bins[i] = (float8)(i * slot_length) + sample_lower;
@@ -446,14 +422,14 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
     // hadii: fill in the histograms
     for(int i = 0; i < samplerows; i++) {
         SimpleRange curr_range = simple_ranges[i];
-        for(int j = 1; j < SLOTS_COUNT; j++) {
-
+        for(int j = 0; j < SLOTS_COUNT; j++) {
             float8 slot_min = hist_bins[j];
             float8 slot_max = hist_bins[j + 1];
 
-            accumulate_range_in_slot_percentage(slot_min, slot_max, &curr_range, &slots_values[j]);
+            float8 cv = accumulate_range_in_slot_percentage(slot_min, slot_max, curr_range);
+            slots_values[j] += cv;
         }
-    }  
+    }
 
     // hadii
     for(int i = 0; i < SLOTS_COUNT; i++) {

@@ -1,6 +1,11 @@
 {
     "C_Cpp.errorSquiggles": "Disabled",
     "files.associations": {
-        "selfuncs.h": "c"
+        "selfuncs.h": "c",
+        "htup.h": "c",
+        "rangetypes.h": "c",
+        "typcache.h": "c",
+        "proj_custom_header.h": "c",
+        "type_traits": "c"
     }
 }

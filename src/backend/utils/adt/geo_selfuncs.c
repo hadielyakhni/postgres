@@ -29,7 +29,7 @@
 #include "utils/typcache.h"
 #include "utils/selfuncs.h"
 #include "utils/rangetypes.h"
-
+#include "utils/proj_custom_header.h"
 
 /*
  *	Selectivity functions for geometric operators.  These are bogus -- unless
@@ -104,15 +104,83 @@ contjoinsel(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(0.001);
 }
 
-HistSlot *construct_hist_slots(float8 *hist_bins, float8 *slots_values, int slots_count) {
-    HistSlot *hist = (HistSlot *) palloc(sizeof(HistSlot) * slots_count);
+CustomHist *construct_hist(float8 *hist_bins, float8 *slots_values, int slots_count) {
+    CustomHist *hist;
+    
+    float8      hist_min;
+    float8      hist_max;
+    float8      range_count = 0;
+    
+    HistSlot *slots = (HistSlot *) palloc(sizeof(HistSlot) * slots_count);
+
     for(int i = 0; i < slots_count; i++) {
-        hist[i].lower = hist_bins[i];
-        hist[i].upper = hist_bins[i + 1];
-        hist[i].value = slots_values[i];
+        if(i == 0) {
+            hist_min = slots[i].lower;
+            hist_max = slots[i].upper;
+        }
+
+        slots[i].lower = hist_bins[i];
+        slots[i].upper = hist_bins[i + 1];
+        slots[i].value = slots_values[i];
+
+        if(slots[i].lower < hist_min) hist_min = slots[i].lower;
+        if(slots[i].upper > hist_max) hist_max = slots[i].upper;
+
+        range_count += slots[i].value;
     }
 
+    hist = (CustomHist *) palloc(sizeof(slots) + 3 * sizeof(float8));
+    
+    hist->range_count = range_count;
+    hist->min = hist_min;
+    hist->max = hist_max;
+    hist->slots = slots;
+
     return hist;
+}
+
+
+CustomHist *normalize_hist(CustomHist *hist, int new_min, int new_max, int slots_count) {
+    float8 *hist_bins = (float8 *) palloc(sizeof(float8) * slots_count + 1); 
+    float8 *slots_values = (float8 *) palloc(sizeof(float8) * slots_count);
+
+    float8 slot_length = (new_max - new_min) / slots_count;
+
+    // initialize the new bins
+    for(int i = 0; i <= slots_count; i++) {
+        hist_bins[i] = (float8)(i * slot_length) + new_min;
+        if(i == slots_count)
+            hist_bins[i] = new_max;
+    }
+
+    // initialize the new slots
+    for(int i = 0; i < slots_count; i++) {
+        slots_values[i] = 0; // clean up the old stuff in memory
+        
+        float8 slot_min = hist_bins[i];
+        float8 slot_max = hist_bins[i + 1];
+
+        for(int j = 0; j < slots_count; j++) {
+            SimpleRange curr_range;
+
+            curr_range.start = hist->slots[j].lower;
+            curr_range.end = hist->slots[j].upper;
+            curr_range.length = curr_range.end - curr_range.start;
+            
+            float8 coverage = accumulate_range_in_slot_percentage(slot_min, slot_max, curr_range);
+            slots_values[i] += coverage * hist->slots[j].value;
+        }
+    }
+
+    return construct_hist(hist_bins, slots_values, slots_count);
+}
+
+float8 vectors_dot_product(HistSlot *slots_1, HistSlot *slots_2, int slots_count) {
+    float8 total = 0;
+    for(int i = 0; i < slots_count; i++) {
+        total += slots_1[i].value * slots_2[i].value;
+    }
+    return total;
 }
 
 
@@ -125,7 +193,7 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
     PlannerInfo *root = (PlannerInfo *) PG_GETARG_POINTER(0);
     Oid         operator = PG_GETARG_OID(1);
     List       *args = (List *) PG_GETARG_POINTER(2);
-    JoinType    jointype = (JoinType) PG_GETARG_INT16(3);
+    // JoinType    jointype = (JoinType) PG_GETARG_INT16(3);
     SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) PG_GETARG_POINTER(4);
     Oid         collation = PG_GET_COLLATION();
 
@@ -135,16 +203,25 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
     VariableStatData vardata2;
     Oid         opfuncoid;
     
-    AttStatsSlot sslot1;
-    AttStatsSlot sslot2;
+    AttStatsSlot sslot11;
+    AttStatsSlot sslot12;
+    AttStatsSlot sslot21;
+    AttStatsSlot sslot22;
     
-    int         bins_count;
-    int         slots_count;
+    int         bins_count1;
+    int         bins_count2;
 
-    HistSlot *hist;
+    // slots_count1 and slots_count2 should be equal tho
+    int         slots_count1;
+    int         slots_count2;
+
+    CustomHist  *hist1;
+    CustomHist  *hist2;
 
     Form_pg_statistic stats1 = NULL;
+    Form_pg_statistic stats2 = NULL;
     TypeCacheEntry *typcache = NULL;
+    
     bool        join_is_reversed;
     bool        empty;
 
@@ -154,17 +231,16 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
     typcache = range_get_typcache(fcinfo, vardata1.vartype);
     opfuncoid = get_opcode(operator);
 
-    memset(&sslot1, 0, sizeof(sslot1));
-
+    // make the first histogram
+    memset(&sslot11, 0, sizeof(sslot11));
+    memset(&sslot12, 0, sizeof(sslot12));
     /* Can't use the histogram with insecure range support functions */
     if (!statistic_proc_security_check(&vardata1, opfuncoid))
         PG_RETURN_FLOAT8((float8) selec);
-
     if (HeapTupleIsValid(vardata1.statsTuple))
     {
         stats1 = (Form_pg_statistic) GETSTRUCT(vardata1.statsTuple);
-
-        if (!get_attstatsslot(&sslot1, vardata1.statsTuple,
+        if (!get_attstatsslot(&sslot11, vardata1.statsTuple,
                              STATISTIC_KIND_BINS_HISTOGRAM,
                              InvalidOid, ATTSTATSSLOT_VALUES))
         {
@@ -172,8 +248,7 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
             ReleaseVariableStats(vardata2);
             PG_RETURN_FLOAT8((float8) selec);
         }
-
-        if (!get_attstatsslot(&sslot2, vardata1.statsTuple,
+        if (!get_attstatsslot(&sslot12, vardata1.statsTuple,
                              STATISTIC_KIND_BINS_VALUES_HISTOGRAM,
                              InvalidOid, ATTSTATSSLOT_VALUES))
         {
@@ -182,32 +257,73 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
             PG_RETURN_FLOAT8((float8) selec);
         }
     }
-
-    bins_count = sslot1.nvalues;  //number of bins
-    slots_count = sslot2.nvalues;  //number of slots (#bins - 1)
-
-    float8 *hist_bins = (float8 *) palloc(sizeof(float8) * bins_count);
-    float8 *slots_values = (float8 *) palloc(sizeof(float8) * slots_count);
-
-    for(int i = 0; i < bins_count; i++) {
-        hist_bins[i] = DatumGetFloat8(sslot1.values[i]);
-        // printf("hist_bins[%d]: %f\n", i, hist_bins[i]);
+    bins_count1 = sslot11.nvalues;  //number of bins
+    slots_count1 = sslot12.nvalues;  //number of slots (#bins - 1)
+    float8 *hist_bins1 = (float8 *) palloc(sizeof(float8) * bins_count1);
+    float8 *slots_values1 = (float8 *) palloc(sizeof(float8) * slots_count1);
+    for(int i = 0; i < bins_count1; i++) {
+        hist_bins1[i] = DatumGetFloat8(sslot11.values[i]);
+    }
+    for(int i = 0; i < slots_count1; i++) {
+        slots_values1[i] = DatumGetFloat8(sslot12.values[i]);
     }
 
-    for(int i = 0; i < slots_count; i++) {
-        slots_values[i] = DatumGetFloat8(sslot2.values[i]);
-        // printf("slots_bins[%d]: %f\n", i, slots_values[i]);
+    //make the second histogram
+    memset(&sslot21, 0, sizeof(sslot21));
+    memset(&sslot22, 0, sizeof(sslot22));
+    /* Can't use the histogram with insecure range support functions */
+    if (!statistic_proc_security_check(&vardata2, opfuncoid))
+        PG_RETURN_FLOAT8((float8) selec);
+    if (HeapTupleIsValid(vardata1.statsTuple))
+    {
+        stats2 = (Form_pg_statistic) GETSTRUCT(vardata2.statsTuple);
+        if (!get_attstatsslot(&sslot21, vardata2.statsTuple,
+                             STATISTIC_KIND_BINS_HISTOGRAM,
+                             InvalidOid, ATTSTATSSLOT_VALUES))
+        {
+            ReleaseVariableStats(vardata1);
+            ReleaseVariableStats(vardata2);
+            PG_RETURN_FLOAT8((float8) selec);
+        }
+        if (!get_attstatsslot(&sslot22, vardata2.statsTuple,
+                             STATISTIC_KIND_BINS_VALUES_HISTOGRAM,
+                             InvalidOid, ATTSTATSSLOT_VALUES))
+        {
+            ReleaseVariableStats(vardata1);
+            ReleaseVariableStats(vardata2);
+            PG_RETURN_FLOAT8((float8) selec);
+        }
+    }
+    bins_count2 = sslot21.nvalues;  //number of bins
+    slots_count2 = sslot22.nvalues;  //number of slots (#bins - 1)
+    float8 *hist_bins2 = (float8 *) palloc(sizeof(float8) * bins_count2);
+    float8 *slots_values2 = (float8 *) palloc(sizeof(float8) * slots_count2);
+    for(int i = 0; i < bins_count2; i++) {
+        hist_bins2[i] = DatumGetFloat8(sslot21.values[i]);
+    }
+    for(int i = 0; i < slots_count2; i++) {
+        slots_values2[i] = DatumGetFloat8(sslot22.values[i]);
     }
 
-    hist = construct_hist_slots(hist_bins, slots_values, slots_count);
-    for(int i = 0; i < slots_count; i++) {
-        printf("slot[%d]: %f -> %f : %f \n", i, hist[i].lower, hist[i].upper, hist[i].value);
-    }
+
+    hist1 = construct_hist(hist_bins1, slots_values1, slots_count1);
+    hist2 = construct_hist(hist_bins2, slots_values2, slots_count1);
+    
+    int common_min = Max(hist1->min, hist2->min);
+    int common_max = Min(hist1->max, hist2->max);
+
+    CustomHist *norm_1 = normalize_hist(hist1, common_min, common_max, slots_count1);
+    CustomHist *norm_2 = normalize_hist(hist2, common_min, common_max, slots_count2);
+
+    float dp = vectors_dot_product(norm_1->slots, norm_2->slots, slots_count1);
+    selec = dp / (hist1->range_count * hist2->range_count);
 
     fflush(stdout);
 
-    free_attstatsslot(&sslot1);
-    free_attstatsslot(&sslot2);
+    free_attstatsslot(&sslot11);
+    free_attstatsslot(&sslot12);
+    free_attstatsslot(&sslot21);
+    free_attstatsslot(&sslot22);
 
     ReleaseVariableStats(vardata1);
     ReleaseVariableStats(vardata2);
