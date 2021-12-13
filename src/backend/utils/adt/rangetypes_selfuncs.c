@@ -29,6 +29,7 @@
 #include "utils/rangetypes.h"
 #include "utils/selfuncs.h"
 #include "utils/typcache.h"
+#include "utils/proj_custom_header.h"
 
 static double calc_rangesel(TypeCacheEntry *typcache, VariableStatData *vardata,
 							const RangeType *constval, Oid operator);
@@ -40,6 +41,9 @@ static double calc_hist_selectivity_scalar(TypeCacheEntry *typcache,
 										   const RangeBound *constbound,
 										   const RangeBound *hist, int hist_nvalues,
 										   bool equal);
+static double calc_hist_selectivity_scalar_new(CustomHist *hist, int slots_count, const RangeBound *constbound); 
+static bool slot_includes_point(HistSlot slot, int point);
+static float8 interpolate_point(int point, HistSlot slot);                                          
 static int	rbound_bsearch(TypeCacheEntry *typcache, const RangeBound *value,
 						   const RangeBound *hist, int hist_length, bool equal);
 static float8 get_position(TypeCacheEntry *typcache, const RangeBound *value,
@@ -375,6 +379,16 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 {
 	AttStatsSlot hslot;
 	AttStatsSlot lslot;
+    AttStatsSlot bslot;
+    AttStatsSlot bvslot;
+
+    float8      *hist_bins;
+    float8      *slots_values;
+    CustomHist  *custom_hist;
+
+    int         bins_count;
+    int         slots_count;
+
 	int			nhist;
 	RangeBound *hist_lower;
 	RangeBound *hist_upper;
@@ -448,6 +462,45 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 	else
 		memset(&lslot, 0, sizeof(lslot));
 
+    
+    memset(&bslot, 0, sizeof(bslot));
+    memset(&bvslot, 0, sizeof(bvslot));
+    /* >> operator uses the new stats */
+	if (operator == OID_RANGE_LEFT_OP)
+	{
+		if (HeapTupleIsValid(vardata->statsTuple))
+        {
+            if (!get_attstatsslot(&bslot, vardata->statsTuple,
+                                STATISTIC_KIND_BINS_HISTOGRAM,
+                                InvalidOid, ATTSTATSSLOT_VALUES))
+            {
+                free_attstatsslot(&bslot);
+			    return -1.0;
+            }
+            if (!get_attstatsslot(&bvslot, vardata->statsTuple,
+                                STATISTIC_KIND_BINS_VALUES_HISTOGRAM,
+                                InvalidOid, ATTSTATSSLOT_VALUES))
+            {
+                free_attstatsslot(&bvslot);
+			    return -1.0;
+            }
+        }
+
+        bins_count = bslot.nvalues;  //number of bins
+        slots_count = bvslot.nvalues;  //number of slots (#bins - 1)
+        hist_bins = (float8 *) palloc(sizeof(float8) * bins_count);
+        slots_values = (float8 *) palloc(sizeof(float8) * slots_count);
+        for(int i = 0; i < bins_count; i++) {
+            hist_bins[i] = DatumGetFloat8(bslot.values[i]);
+        }
+        for(int i = 0; i < slots_count; i++) {
+            slots_values[i] = DatumGetFloat8(bvslot.values[i]);
+        }
+
+        custom_hist = construct_hist(hist_bins, slots_values, slots_count);
+	}
+
+
 	/* Extract the bounds of the constant value. */
 	range_deserialize(typcache, constval, &const_lower, &const_upper, &empty);
 	Assert(!empty);
@@ -493,9 +546,7 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 
 		case OID_RANGE_LEFT_OP:
 			/* var << const when upper(var) < lower(const) */
-			hist_selec =
-				calc_hist_selectivity_scalar(typcache, &const_lower,
-											 hist_upper, nhist, false);
+			hist_selec = calc_hist_selectivity_scalar_new(custom_hist, slots_count, &const_lower);
 			break;
 
 		case OID_RANGE_RIGHT_OP:
@@ -585,6 +636,49 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 	free_attstatsslot(&hslot);
 
 	return hist_selec;
+}
+
+
+static float8 calc_hist_selectivity_scalar_new(CustomHist *hist, int slots_count, const RangeBound *constbound) {
+    int lower = DatumGetInt32(constbound->val);
+    
+    if(lower < hist->min)
+        return 0;
+    if(lower > hist->max)
+        return 1;
+    
+    float8 matched_ranges_count = 0;
+    float8 selec = 0;
+
+    for(int i = 0; i < slots_count; i++) {
+        HistSlot curr_slot = hist->slots[i];
+        if(slot_includes_point(curr_slot, lower)) {
+            matched_ranges_count += interpolate_point(lower, curr_slot);
+            break;
+        }
+
+        matched_ranges_count += curr_slot.value;
+    }
+
+    selec = matched_ranges_count / hist->range_count;
+    
+    printf("selc: %f\n", selec);
+    fflush(stdout);
+    
+    return selec;
+}
+
+
+static bool slot_includes_point(HistSlot slot, int point) {
+    return slot.lower <= point && point <= slot.upper;
+} 
+
+
+static float8 interpolate_point(int point, HistSlot slot) {
+    if(slot.lower == slot.upper)
+        return slot.value;
+
+    return slot.value * (point - slot.lower) / (slot.upper - slot.lower);    
 }
 
 

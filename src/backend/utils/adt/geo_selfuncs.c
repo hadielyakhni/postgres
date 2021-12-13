@@ -319,7 +319,6 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
     selec = dp / (hist1->range_count * hist2->range_count);
 
     printf("selc: %f", selec);
-
     fflush(stdout);
 
     free_attstatsslot(&sslot11);
