@@ -667,10 +667,6 @@ static float8 calc_hist_selectivity_scalar_new(CustomHist *hist, int slots_count
     }
 
     selec = matched_ranges_count / hist->range_count;
-    
-    printf("selc: %f\n", selec);
-    fflush(stdout);
-    
     return selec;
 }
 
