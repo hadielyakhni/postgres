@@ -270,7 +270,7 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  */
 #define STATISTIC_KIND_BOUNDS_HISTOGRAM  7
 
-#define STATISTIC_KIND_RANGE_HISTOGRAM  8
+#define STATISTIC_KIND_BINS_HISTOGRAM  8
 
 #define STATISTIC_KIND_BINS_VALUES_HISTOGRAM 9
 
