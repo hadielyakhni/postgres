@@ -466,7 +466,7 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
     memset(&bslot, 0, sizeof(bslot));
     memset(&bvslot, 0, sizeof(bvslot));
     /* >> operator uses the new stats */
-	if (operator == OID_RANGE_LEFT_OP)
+	if (operator == OID_RANGE_LEFT_OP || operator == OID_RANGE_OVERLAP_OP)
 	{
 		if (HeapTupleIsValid(vardata->statsTuple))
         {
@@ -584,13 +584,19 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 			 * caller already constructed the singular range from the element
 			 * constant, so just treat it the same as &&.
 			 */
-			hist_selec =
-				calc_hist_selectivity_scalar(typcache, &const_lower, hist_upper,
-											 nhist, false);
-			hist_selec +=
-				(1.0 - calc_hist_selectivity_scalar(typcache, &const_upper, hist_lower,
-													nhist, true));
-			hist_selec = 1.0 - hist_selec;
+			// hist_selec =
+			// 	calc_hist_selectivity_scalar(typcache, &const_lower, hist_upper,
+			// 								 nhist, false);
+			// hist_selec +=
+			// 	(1.0 - calc_hist_selectivity_scalar(typcache, &const_upper, hist_lower,
+			// 										nhist, true));
+
+            hist_selec = 
+                calc_hist_selectivity_scalar_new(custom_hist, slots_count, &const_upper)
+                - calc_hist_selectivity_scalar_new(custom_hist, slots_count, &const_lower);
+
+            printf("selec: %f\n", hist_selec);
+            fflush(stdout);
 			break;
 
 		case OID_RANGE_CONTAINS_OP:
