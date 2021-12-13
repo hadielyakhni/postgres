@@ -318,6 +318,8 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
     float dp = vectors_dot_product(norm_1->slots, norm_2->slots, slots_count1);
     selec = dp / (hist1->range_count * hist2->range_count);
 
+    printf("selc: %f", selec);
+
     fflush(stdout);
 
     free_attstatsslot(&sslot11);
