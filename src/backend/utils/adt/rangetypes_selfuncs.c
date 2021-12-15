@@ -547,6 +547,8 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 		case OID_RANGE_LEFT_OP:
 			/* var << const when upper(var) < lower(const) */
 			hist_selec = calc_hist_selectivity_scalar_new(custom_hist, slots_count, &const_lower);
+            printf("selec: %f\n", hist_selec);
+            fflush(stdout);
 			break;
 
 		case OID_RANGE_RIGHT_OP:

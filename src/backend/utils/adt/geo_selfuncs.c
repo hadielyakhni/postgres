@@ -106,7 +106,7 @@ contjoinsel(PG_FUNCTION_ARGS)
 
 CustomHist *construct_hist(float8 *hist_bins, float8 *slots_values, int slots_count) {
     CustomHist *hist;
-    
+
     float8      hist_min;
     float8      hist_max;
     float8      range_count = 0;
@@ -114,14 +114,14 @@ CustomHist *construct_hist(float8 *hist_bins, float8 *slots_values, int slots_co
     HistSlot *slots = (HistSlot *) palloc(sizeof(HistSlot) * slots_count);
 
     for(int i = 0; i < slots_count; i++) {
+        slots[i].lower = hist_bins[i];
+        slots[i].upper = hist_bins[i + 1];
+        slots[i].value = slots_values[i];
+
         if(i == 0) {
             hist_min = slots[i].lower;
             hist_max = slots[i].upper;
         }
-
-        slots[i].lower = hist_bins[i];
-        slots[i].upper = hist_bins[i + 1];
-        slots[i].value = slots_values[i];
 
         if(slots[i].lower < hist_min) hist_min = slots[i].lower;
         if(slots[i].upper > hist_max) hist_max = slots[i].upper;
@@ -305,18 +305,22 @@ rangeoverlapsjoinsel(PG_FUNCTION_ARGS)
         slots_values2[i] = DatumGetFloat8(sslot22.values[i]);
     }
 
-
+    // constructing histograms from bins
     hist1 = construct_hist(hist_bins1, slots_values1, slots_count1);
     hist2 = construct_hist(hist_bins2, slots_values2, slots_count1);
     
     int common_min = Max(hist1->min, hist2->min);
     int common_max = Min(hist1->max, hist2->max);
 
+    // nomalizing the 2 histograms
     CustomHist *norm_1 = normalize_hist(hist1, common_min, common_max, slots_count1);
     CustomHist *norm_2 = normalize_hist(hist2, common_min, common_max, slots_count2);
 
+    // calculate the selectivity
     float dp = vectors_dot_product(norm_1->slots, norm_2->slots, slots_count1);
     selec = dp / (hist1->range_count * hist2->range_count);
+
+    printf("selec: %f\n", selec);
 
     free_attstatsslot(&sslot11);
     free_attstatsslot(&sslot12);

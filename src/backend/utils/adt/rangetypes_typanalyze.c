@@ -93,8 +93,6 @@ range_bound_qsort_cmp(const void *a1, const void *a2, void *arg)
 	return range_cmp_bounds(typcache, b1, b2);
 }
 
-
-// hadiii -> ...
 float8 accumulate_range_in_slot_percentage(float8 s_min, float8 s_max, SimpleRange range) {
     int r_min =     range.start;
     int r_max =     range.end;
@@ -141,12 +139,10 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 	uppers = (RangeBound *) palloc(sizeof(RangeBound) * samplerows);
 	lengths = (float8 *) palloc(sizeof(float8) * samplerows);
 
-    // hadiii -> ...
-    int         sample_lower = 0;
-    int         sample_upper = 0;
+    int         sample_lower;
+    int         sample_upper;
     int         SLOTS_COUNT = 20;
     int         slot_length = 0;
-    // hadiii -> ...
     SimpleRange *simple_ranges = (SimpleRange *) palloc(sizeof(SimpleRange) * samplerows);
     
     float8 *hist_bins = (float8 *) palloc(sizeof(float8) * SLOTS_COUNT + 1);
@@ -191,17 +187,20 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 			lowers[non_empty_cnt] = lower;
 			uppers[non_empty_cnt] = upper;
 
-            // hadiii -> ...
             int d_lower = DatumGetInt16(lower.val);
             int d_upper = DatumGetInt16(upper.val);
+
+            if(range_no == 0) {
+                sample_lower = d_lower;
+                sample_upper = d_upper;
+            } 
 
             if(d_lower < sample_lower) sample_lower = d_lower;
             if(d_upper > sample_upper) sample_upper = d_upper;
 
             simple_ranges[range_no].start = d_lower;
             simple_ranges[range_no].end = d_upper;
-            simple_ranges[range_no].length = d_upper - d_lower;
-            
+            simple_ranges[range_no].length = d_upper - d_lower;            
             slot_length = (sample_upper - sample_lower) / SLOTS_COUNT;
 
 			if (lower.infinite || upper.infinite)
@@ -450,7 +449,4 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 	 * We don't need to bother cleaning up any of our temporary palloc's. The
 	 * hashtable should also go away, as it used a child memory context.
 	 */
-
-    // hadiii -> 443
-    fflush(stdout);
 }
